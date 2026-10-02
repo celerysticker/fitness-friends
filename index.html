@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workout Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root {
+    --page: #E4E1D8;
+    --dot: rgba(44, 44, 42, 0.28);
+    --card: #FAF9F5;
+    --ink: #2C2C2A;
+    --ink-2: #5F5E5A;
+    --ink-3: #888780;
+    --tile: #ECEAE3;
+    --tile-hover: #DEDBD2;
+    --focus: #378ADD;
+    --danger: #A32D2D;
+
+    --note: #FFF1A8;
+    --note-ink: #4A3D00;
+    --note-ink-2: #6B5A00;
+    --note-tape: #F7E27A;
+    --note-border: #B39B1F;
+    --note-hover: #F5E48C;
+    --note-active: #EDD96E;
+
+    --tile-size: 28px;
+    --tile-gap: 8px;
+    --cal-pad-x: 12px;
+    --arrow: 32px;
+
+    /* Same colors in light and dark mode. */
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; }
+
+  body {
+    min-height: 100vh;
+    padding: 40px 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--ink);
+    background-color: var(--page);
+    background-image: radial-gradient(var(--dot) 1.1px, transparent 1.5px);
+    background-size: 18px 18px;
+    background-position: 9px 9px;
+  }
+
+  .stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 36px;
+  }
+
+  /* ---------- Sticky note ---------- */
+
+  .note {
+    position: relative;
+    flex: none;
+    width: 230px;
+    max-width: 100%;
+    padding: 22px 20px 16px;
+    background: var(--note);
+    color: var(--note-ink);
+    border-radius: 2px;
+    transform: rotate(-2deg);
+  }
+
+  .note::before { /* tape */
+    content: "";
+    position: absolute;
+    top: -8px;
+    left: 50%;
+    width: 70px;
+    height: 18px;
+    background: var(--note-tape);
+    opacity: 0.75;
+    transform: translateX(-50%) rotate(3deg);
+  }
+
+  .note-label { font-size: 12px; color: var(--note-ink-2); }
+  .hand { font-family: "Patrick Hand", cursive; }
+  .note-when { font-size: 28px; line-height: 1.1; }
+  .note-when.first { margin-top: 4px; }
+  .note.past .note-when { text-decoration: line-through; color: var(--note-ink-2); }
+  .note-empty { font-size: 26px; line-height: 1.15; margin-top: 2px; }
+  .note-msg {
+    margin-top: 8px;
+    font-size: 18px;
+    line-height: 1.25;
+    color: var(--note-ink-2);
+    overflow-wrap: anywhere;
+  }
+
+  .note-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .note-btn {
+    font: inherit;
+    font-size: 13px;
+    color: var(--note-ink);
+    background: transparent;
+    border: 0.5px solid var(--note-border);
+    border-radius: 6px;
+    padding: 4px 12px;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .note-btn:hover { background: var(--note-hover); }
+  .note-btn:active { background: var(--note-active); transform: scale(0.98); }
+  .note-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+  .note-form label { display: block; font-size: 12px; color: var(--note-ink-2); }
+  .note-form input {
+    display: block;
+    width: 100%;
+    margin: 4px 0 10px;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 14px;
+    color: var(--note-ink);
+    background: rgba(255, 255, 255, 0.6);
+    border: 0.5px solid var(--note-border);
+    border-radius: 6px;
+  }
+  .note-form input:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
+  .note-error { font-size: 13px; color: var(--danger); }
+
+  /* ---------- Calendar ---------- */
+
+  .cal {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--card);
+    border-radius: 18px;
+    /* Bottom padding is the side gap (padding + arrow + 4px gap + 6px inset) less 20px. */
+    padding: 58px var(--cal-pad-x) calc(var(--cal-pad-x) + var(--arrow) - 10px);
+  }
+
+  .arrow {
+    flex: none;
+    width: var(--arrow);
+    height: var(--arrow);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--ink-3);
+    cursor: pointer;
+  }
+  .arrow:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .arrow.is-hidden { visibility: hidden; }
+
+  .month { padding: 0 6px; }
+
+  .month-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+  }
+  .month-title { margin: 0; font-size: 16px; font-weight: 500; }
+  .month-count { font-size: 13px; color: var(--ink-2); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(7, var(--tile-size));
+    grid-auto-rows: var(--tile-size);
+    gap: var(--tile-gap);
+  }
+
+  .weekday {
+    align-self: center;
+    font-size: 11px;
+    color: var(--ink-3);
+    text-align: center;
+  }
+
+  .tile {
+    width: var(--tile-size);
+    height: var(--tile-size);
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font: inherit;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--ink-2);
+    background: var(--tile);
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.1s;
+  }
+  .tile:hover { background: var(--tile-hover); }
+  .tile.on { background: var(--on); color: var(--on-text); }
+  .tile.on:hover { background: var(--on-hover); }
+  .tile.today { box-shadow: 0 0 0 1.5px var(--card), 0 0 0 3px var(--ink); }
+  .tile:focus-visible { outline: none; box-shadow: 0 0 0 1.5px var(--card), 0 0 0 3px var(--focus); }
+
+  /* ---------- Misc ---------- */
+
+  .demo {
+    max-width: 420px;
+    margin: 28px 0 0;
+    font-size: 12px;
+    color: var(--ink-2);
+    text-align: center;
+  }
+
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    max-width: calc(100vw - 32px);
+    padding: 8px 14px;
+    font-size: 13px;
+    color: #fff;
+    background: var(--ink);
+    border-radius: 8px;
+    transform: translateX(-50%);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  .toast.show { opacity: 1; }
+
+  @media (max-width: 680px) {
+    .stage { flex-direction: column; gap: 32px; }
+  }
+
+  @media (max-width: 400px) {
+    :root { --cal-pad-x: 8px; --arrow: 28px; }
+  }
+</style>
+</head>
+<body>
+
+<main class="stage">
+  <section class="note" id="note" aria-label="Next workout">
+    <div id="note-view"></div>
+    <form class="note-form" id="note-form" hidden novalidate>
+      <label for="note-when">Next workout</label>
+      <input id="note-when" type="datetime-local">
+      <label for="note-text">Note</label>
+      <input id="note-text" type="text" maxlength="60" placeholder="see you tomorrow">
+      <div class="note-error" id="note-error" role="alert"></div>
+      <div class="note-actions">
+        <button type="button" class="note-btn" id="note-cancel">Cancel</button>
+        <button type="submit" class="note-btn">Save</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="cal" id="cal" aria-label="Workout calendar">
+    <button type="button" class="arrow" id="prev" aria-label="Previous month">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6l6 6"/></svg>
+    </button>
+    <div class="month">
+      <div class="month-head">
+        <h1 class="month-title" id="month-title"></h1>
+        <span class="month-count" id="month-count"></span>
+      </div>
+      <div class="grid" id="grid"></div>
+    </div>
+    <button type="button" class="arrow" id="next" aria-label="Next month">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6l-6 6"/></svg>
+    </button>
+  </section>
+</main>
+
+<p class="demo" id="demo" hidden>
+  Demo mode: changes are saved in this browser only. Add your Supabase URL and anon key
+  at the top of the script in index.html to share them.
+</p>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+// Fill these in from Supabase: Project Settings → API.
+// The anon key is meant to be public; never put the service_role key here.
+const SUPABASE_URL = "https://bhbglntlyzmemzsvtmut.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_mStW4Cxt_neYzEu_reH3Hw_G8I7KsHG";
+
+// Months the calendar can show, oldest first. Months are 1-based.
+const MONTHS = [
+  { year: 2026, month: 9,  color: "#7F77DD", text: "#EEEDFE", hover: "#534AB7" }, // September, purple
+  { year: 2026, month: 10, color: "#EF9F27", text: "#412402", hover: "#BA7517" }, // October, orange
+];
+
+const DEFAULT_NOTE = "see you tomorrow";
+
+// ---------- Helpers ----------
+
+const $ = (id) => document.getElementById(id);
+const pad = (n) => String(n).padStart(2, "0");
+const dateKey = (year, month, day) => `${year}-${pad(month)}-${pad(day)}`;
+const daysIn = ({ year, month }) => new Date(year, month, 0).getDate();
+const firstWeekday = ({ year, month }) => new Date(year, month - 1, 1).getDay();
+
+function todayKey() {
+  const t = new Date();
+  return dateKey(t.getFullYear(), t.getMonth() + 1, t.getDate());
+}
+
+// Rows for the longest month, so the card keeps its size when switching.
+const ROWS = Math.max(...MONTHS.map((m) => Math.ceil((firstWeekday(m) + daysIn(m)) / 7)));
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+// "2026-10-04T07:00" in local time, for <input type="datetime-local">.
+function toLocalInput(date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+let toastTimer;
+function toast(message) {
+  const node = $("toast");
+  node.textContent = message;
+  node.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => node.classList.remove("show"), 4000);
+}
+
+// ---------- Storage ----------
+// Supabase when configured; otherwise this browser's localStorage, so the page
+// still works for local testing (open two tabs to see changes sync).
+
+function createStore() {
+  const configured = !SUPABASE_URL.startsWith("YOUR_") && !SUPABASE_ANON_KEY.startsWith("YOUR_");
+  return configured ? supabaseStore() : localStore();
+}
+
+function supabaseStore() {
+  const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return {
+    demo: false,
+
+    async loadDays(from, to) {
+      const { data, error } = await db
+        .from("workout_days")
+        .select("day, worked_out")
+        .gte("day", from)
+        .lte("day", to);
+      if (error) throw error;
+      return Object.fromEntries(data.map((row) => [row.day, row.worked_out]));
+    },
+
+    async setDay(day, workedOut) {
+      const { error } = await db
+        .from("workout_days")
+        .upsert({ day, worked_out: workedOut, updated_at: new Date().toISOString() });
+      if (error) throw error;
+    },
+
+    async loadNext() {
+      const { data, error } = await db
+        .from("next_workout")
+        .select("starts_at, note")
+        .eq("id", 1)
+        .single();
+      if (error) throw error;
+      return data;
+    },
+
+    async setNext(startsAt, note) {
+      const { error } = await db
+        .from("next_workout")
+        .update({ starts_at: startsAt, note, updated_at: new Date().toISOString() })
+        .eq("id", 1);
+      if (error) throw error;
+    },
+
+    subscribe({ onDay, onNext }) {
+      db.channel("tracker")
+        .on("postgres_changes", { event: "*", schema: "public", table: "workout_days" },
+          ({ new: row }) => row && row.day && onDay(row.day, row.worked_out))
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "next_workout" },
+          ({ new: row }) => onNext(row))
+        .subscribe();
+    },
+  };
+}
+
+function localStore() {
+  const read = (key, fallback) => {
+    try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+  };
+  const write = (key, value) => {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  };
+  return {
+    demo: true,
+    async loadDays() { return read("wt-days", {}); },
+    async setDay(day, workedOut) { write("wt-days", { ...read("wt-days", {}), [day]: workedOut }); },
+    async loadNext() { return read("wt-next", { starts_at: null, note: DEFAULT_NOTE }); },
+    async setNext(startsAt, note) { write("wt-next", { starts_at: startsAt, note }); },
+    subscribe({ onAllDays, onNext }) {
+      // Fires in other tabs of this browser when one tab writes.
+      window.addEventListener("storage", (e) => {
+        if (e.key === "wt-days") onAllDays(read("wt-days", {}));
+        if (e.key === "wt-next") onNext(read("wt-next", {}));
+      });
+    },
+  };
+}
+
+// ---------- State ----------
+
+const store = createStore();
+const days = {}; // "YYYY-MM-DD" -> true for workout days
+let next = { starts_at: null, note: DEFAULT_NOTE };
+let current = initialMonthIndex();
+let shownToday = todayKey();
+
+// The current month if it's in MONTHS, otherwise the nearest end of the list.
+function initialMonthIndex() {
+  const t = new Date();
+  const now = t.getFullYear() * 12 + t.getMonth() + 1;
+  const index = MONTHS.findIndex((m) => m.year * 12 + m.month === now);
+  if (index >= 0) return index;
+  const last = MONTHS.at(-1);
+  return now > last.year * 12 + last.month ? MONTHS.length - 1 : 0;
+}
+
+function setDay(day, workedOut) {
+  if (workedOut) days[day] = true;
+  else delete days[day];
+  renderCalendar();
+}
+
+function isPast() {
+  return Boolean(next.starts_at) && new Date(next.starts_at) < new Date();
+}
+
+// ---------- Calendar ----------
+
+function renderCalendar() {
+  const m = MONTHS[current];
+  const first = firstWeekday(m);
+  const count = daysIn(m);
+  const today = todayKey();
+  const focusedDay = document.activeElement && document.activeElement.dataset.day;
+
+  const cal = $("cal");
+  cal.style.setProperty("--on", m.color);
+  cal.style.setProperty("--on-text", m.text);
+  cal.style.setProperty("--on-hover", m.hover);
+
+  $("month-title").textContent = new Date(m.year, m.month - 1, 1)
+    .toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  const grid = $("grid");
+  grid.replaceChildren();
+  for (const letter of ["S", "M", "T", "W", "T", "F", "S"]) {
+    const node = el("div", "weekday", letter);
+    node.setAttribute("aria-hidden", "true");
+    grid.append(node);
+  }
+  for (let i = 0; i < first; i++) grid.append(el("div"));
+
+  let marked = 0;
+  for (let d = 1; d <= count; d++) {
+    const key = dateKey(m.year, m.month, d);
+    const on = Boolean(days[key]);
+    if (on) marked++;
+    const label = new Date(m.year, m.month - 1, d)
+      .toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    const tile = el("button", "tile" + (on ? " on" : "") + (key === today ? " today" : ""), d);
+    tile.type = "button";
+    tile.dataset.day = key;
+    tile.title = label;
+    tile.setAttribute("aria-label", label);
+    tile.setAttribute("aria-pressed", String(on));
+    grid.append(tile);
+  }
+  for (let i = first + count; i < ROWS * 7; i++) grid.append(el("div"));
+
+  $("month-count").textContent = `${marked} / ${count} days`;
+  $("prev").classList.toggle("is-hidden", current === 0);
+  $("next").classList.toggle("is-hidden", current === MONTHS.length - 1);
+
+  if (focusedDay) {
+    const again = grid.querySelector(`[data-day="${focusedDay}"]`);
+    if (again) again.focus();
+  }
+}
+
+async function toggleDay(day) {
+  const workedOut = !days[day];
+  setDay(day, workedOut);
+  try {
+    await store.setDay(day, workedOut);
+  } catch (error) {
+    console.error(error);
+    setDay(day, !workedOut);
+    toast("Couldn't save that day. Try again.");
+  }
+}
+
+$("grid").addEventListener("click", (e) => {
+  const tile = e.target.closest(".tile");
+  if (tile) toggleDay(tile.dataset.day);
+});
+
+$("prev").addEventListener("click", () => {
+  if (current > 0) { current--; renderCalendar(); }
+});
+
+$("next").addEventListener("click", () => {
+  if (current < MONTHS.length - 1) { current++; renderCalendar(); }
+});
+
+// ---------- Sticky note ----------
+
+function renderNote() {
+  const view = $("note-view");
+  const at = next.starts_at ? new Date(next.starts_at) : null;
+  const past = isPast();
+  $("note").classList.toggle("past", past);
+
+  view.replaceChildren(el("div", "note-label", past ? "Past workout" : "Next workout"));
+  if (at) {
+    const weekday = at.toLocaleDateString("en-US", { weekday: "long" });
+    view.append(el("div", "hand note-when first", `${weekday} ${pad(at.getMonth() + 1)}/${pad(at.getDate())}`));
+    view.append(el("div", "hand note-when",
+      at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZoneName: "short" })));
+  } else {
+    view.append(el("div", "hand note-empty", "Nothing planned yet"));
+  }
+  if (next.note) view.append(el("div", "hand note-msg", next.note));
+
+  const actions = el("div", "note-actions");
+  const edit = el("button", "note-btn", at ? "Edit" : "Set");
+  edit.type = "button";
+  edit.id = "note-edit";
+  edit.addEventListener("click", openForm);
+  actions.append(edit);
+  view.append(actions);
+}
+
+function openForm() {
+  $("note-when").value = next.starts_at ? toLocalInput(new Date(next.starts_at)) : "";
+  $("note-text").value = next.note ?? "";
+  $("note-error").textContent = "";
+  $("note-view").hidden = true;
+  $("note-form").hidden = false;
+  $("note-when").focus();
+}
+
+function closeForm() {
+  $("note-form").hidden = true;
+  $("note-view").hidden = false;
+  $("note-edit").focus();
+}
+
+$("note-cancel").addEventListener("click", closeForm);
+
+$("note-form").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeForm();
+});
+
+$("note-when").addEventListener("input", () => { $("note-error").textContent = ""; });
+
+$("note-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const when = $("note-when").value;
+  if (!when) {
+    $("note-error").textContent = "Pick a date and time first";
+    return;
+  }
+  const previous = next;
+  // datetime-local is local wall time; store it as a UTC moment.
+  next = { starts_at: new Date(when).toISOString(), note: $("note-text").value.trim() };
+  renderNote();
+  closeForm();
+  try {
+    await store.setNext(next.starts_at, next.note);
+  } catch (error) {
+    console.error(error);
+    next = previous;
+    renderNote();
+    toast("Couldn't save the next workout. Try again.");
+  }
+});
+
+// ---------- Start ----------
+
+async function init() {
+  renderCalendar();
+  renderNote();
+  if (store.demo) $("demo").hidden = false;
+
+  store.subscribe({
+    onDay: (day, workedOut) => setDay(day, workedOut),
+    onAllDays: (all) => {
+      for (const key of Object.keys(days)) delete days[key];
+      for (const [key, value] of Object.entries(all)) if (value) days[key] = true;
+      renderCalendar();
+    },
+    onNext: (row) => {
+      next = { starts_at: row.starts_at ?? null, note: row.note ?? "" };
+      renderNote();
+    },
+  });
+
+  const last = MONTHS.at(-1);
+  const from = dateKey(MONTHS[0].year, MONTHS[0].month, 1);
+  const to = dateKey(last.year, last.month, daysIn(last));
+  try {
+    const [loadedDays, loadedNext] = await Promise.all([store.loadDays(from, to), store.loadNext()]);
+    for (const [key, value] of Object.entries(loadedDays)) if (value) days[key] = true;
+    if (loadedNext) next = { starts_at: loadedNext.starts_at ?? null, note: loadedNext.note ?? "" };
+    renderCalendar();
+    renderNote();
+  } catch (error) {
+    console.error(error);
+    toast("Couldn't load workouts. Check your connection and refresh.");
+  }
+
+  // Once a minute: grey out a passed workout, and move the "today" ring at midnight.
+  setInterval(() => {
+    if (isPast() !== $("note").classList.contains("past")) renderNote();
+    if (todayKey() !== shownToday) {
+      shownToday = todayKey();
+      renderCalendar();
+    }
+  }, 60_000);
+}
+
+init();
+</script>
+</body>
+</html>
