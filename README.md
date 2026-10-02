@@ -1,4 +1,4 @@
-# Workout Tracker
+# fitness friends
 
 A shared workout calendar. Click a day to mark it as a workout day, and set the next
 workout on the sticky note. Everyone with the link sees the same data.
