@@ -30,8 +30,13 @@
     --note-hover: #F5E48C;
     --note-active: #EDD96E;
 
+    --ring: #97C459;
+    --ring-track: #E8EEDF;
+    --ring-text: #3B6D11;
+
     --tile-size: 28px;
     --tile-gap: 8px;
+    --stroke: 4.5px; /* streak lines and goal rings */
     --cal-pad-x: 12px;
     --arrow: 32px;
 
@@ -186,8 +191,12 @@
   .month-count { font-size: 13px; color: var(--ink-2); }
 
   .grid {
+    /* Its own stacking context, so streak lines can sit behind the tiles. */
+    position: relative;
+    z-index: 0;
     display: grid;
-    grid-template-columns: repeat(7, var(--tile-size));
+    /* Seven days, then the weekly goal column with a little extra space. */
+    grid-template-columns: repeat(7, var(--tile-size)) calc(var(--tile-size) + 4px);
     grid-auto-rows: var(--tile-size);
     gap: var(--tile-gap);
   }
@@ -200,6 +209,7 @@
   }
 
   .tile {
+    position: relative;
     width: var(--tile-size);
     height: var(--tile-size);
     padding: 0;
@@ -215,13 +225,69 @@
     background: var(--tile);
     cursor: pointer;
     user-select: none;
-    transition: background 0.1s;
+    transition: background 0.2s ease, color 0.2s ease;
   }
   .tile:hover { background: var(--tile-hover); }
   .tile.on { background: var(--on); color: var(--on-text); }
   .tile.on:hover { background: var(--on-hover); }
   .tile.today { box-shadow: 0 0 0 1.5px var(--card), 0 0 0 3px var(--ink); }
   .tile:focus-visible { outline: none; box-shadow: 0 0 0 1.5px var(--card), 0 0 0 3px var(--focus); }
+
+  /* ---------- Streaks ---------- */
+
+  /* The line to the next day, drawn when both days are marked. It grows out of
+     whichever tile was just clicked (--grow-from) and sits behind the tiles. */
+  .tile::after {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    left: calc(100% - 1px);
+    top: calc(50% - var(--stroke) / 2);
+    width: calc(var(--tile-gap) + 2px);
+    height: var(--stroke);
+    background: var(--on);
+    transform: scaleX(0);
+    transform-origin: var(--grow-from, left) center;
+    transition: transform 0.28s cubic-bezier(0.3, 0.7, 0.4, 1);
+    pointer-events: none;
+  }
+  .tile.joined::after { transform: scaleX(1); }
+
+  .goal {
+    width: var(--tile-size);
+    height: var(--tile-size);
+    justify-self: end;
+  }
+  .goal svg { display: block; width: 100%; height: 100%; overflow: visible; }
+  .goal .track { fill: none; stroke: var(--ring-track); stroke-width: var(--stroke); }
+  .goal .fill {
+    fill: none;
+    stroke: var(--ring);
+    stroke-width: var(--stroke);
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.45s cubic-bezier(0.3, 0.7, 0.4, 1), opacity 0.2s ease;
+  }
+  .goal .count { font-size: 11px; fill: var(--ink-2); }
+  .goal.met .count { fill: var(--ring-text); font-weight: 500; }
+
+  /* Starts with the girls' high five but is quicker. */
+  @keyframes goal-pulse {
+    0%   { transform: scale(1); }
+    35%  { transform: scale(1.18); }
+    70%  { transform: scale(0.96); }
+    100% { transform: scale(1); }
+  }
+  .goal.pulse { animation: goal-pulse 0.45s ease-out; }
+
+  /* Loading and switching months shouldn't animate. */
+  .grid.instant .tile,
+  .grid.instant .tile::after,
+  .grid.instant .goal .fill { transition: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tile, .tile::after, .goal .fill { transition: none; }
+    .goal.pulse { animation: none; }
+  }
 
   /* ---------- Girls ---------- */
 
@@ -315,8 +381,9 @@
     .stage { flex-direction: column; gap: 76px; }
   }
 
+  /* Smaller tiles so the goal column fits on narrow phones. */
   @media (max-width: 400px) {
-    :root { --cal-pad-x: 8px; --arrow: 28px; }
+    :root { --cal-pad-x: 8px; --arrow: 24px; --tile-size: 26px; --tile-gap: 6px; }
   }
 </style>
 </head>
@@ -428,12 +495,10 @@ function supabaseStore() {
   return {
     demo: false,
 
-    async loadDays(from, to) {
-      const { data, error } = await db
-        .from("workout_days")
-        .select("day, worked_out")
-        .gte("day", from)
-        .lte("day", to);
+    // Every day, not just the months on screen, so weeks that span two months
+    // count both. It's at most 365 rows a year.
+    async loadDays() {
+      const { data, error } = await db.from("workout_days").select("day, worked_out");
       if (error) throw error;
       return Object.fromEntries(data.map((row) => [row.day, row.worked_out]));
     },
@@ -520,7 +585,7 @@ function setDay(day, workedOut) {
   if (workedOut && !days[day]) cheer();
   if (workedOut) days[day] = true;
   else delete days[day];
-  renderCalendar();
+  updateCalendar({ animate: true, changed: day });
 }
 
 function isPast() {
@@ -529,12 +594,45 @@ function isPast() {
 
 // ---------- Calendar ----------
 
-function renderCalendar() {
+// The month is built once, then updated in place so the tiles, streak lines
+// and goal rings can animate between states.
+
+const GOAL = 3;            // workouts a week
+const RING_R = 10.5;       // in the ring's 28-unit viewBox
+const RING_LENGTH = 2 * Math.PI * RING_R;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+let tiles = [];            // { key, el, col, nextKey } for each day of the month
+let goals = [];            // { el, fill, count, keys, start, future, cnt } for each week row
+
+function svg(tag, attrs) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
+  return node;
+}
+
+function goalRing() {
+  const box = el("div", "goal");
+  box.setAttribute("role", "img");
+  const ring = svg("svg", { viewBox: "0 0 28 28" });
+  ring.append(svg("circle", { class: "track", cx: 14, cy: 14, r: RING_R }));
+  const fill = svg("circle", {
+    class: "fill", cx: 14, cy: 14, r: RING_R,
+    "stroke-dasharray": RING_LENGTH, "stroke-dashoffset": RING_LENGTH,
+    transform: "rotate(-90 14 14)",
+  });
+  const count = svg("text", { class: "count", x: 14, y: 18, "text-anchor": "middle" });
+  ring.append(fill, count);
+  box.append(ring);
+  box.addEventListener("animationend", () => box.classList.remove("pulse"));
+  return { el: box, fill, count, cnt: null };
+}
+
+function buildCalendar() {
   const m = MONTHS[current];
   const first = firstWeekday(m);
   const count = daysIn(m);
   const today = todayKey();
-  const focusedDay = document.activeElement && document.activeElement.dataset.day;
 
   const cal = $("cal");
   cal.style.setProperty("--on", m.color);
@@ -551,32 +649,100 @@ function renderCalendar() {
     node.setAttribute("aria-hidden", "true");
     grid.append(node);
   }
-  for (let i = 0; i < first; i++) grid.append(el("div"));
+  grid.append(el("div")); // no header over the goal column
 
-  let marked = 0;
-  for (let d = 1; d <= count; d++) {
-    const key = dateKey(m.year, m.month, d);
-    const on = Boolean(days[key]);
-    if (on) marked++;
-    const label = new Date(m.year, m.month - 1, d)
-      .toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-    const tile = el("button", "tile" + (on ? " on" : "") + (key === today ? " today" : ""), d);
-    tile.type = "button";
-    tile.dataset.day = key;
-    tile.title = label;
-    tile.setAttribute("aria-label", label);
-    tile.setAttribute("aria-pressed", String(on));
-    grid.append(tile);
+  tiles = [];
+  goals = [];
+  for (let row = 0; row < ROWS; row++) {
+    // The Sunday to Saturday week this row shows, including days from the
+    // months either side.
+    const keys = [];
+    for (let col = 0; col < 7; col++) {
+      const date = new Date(m.year, m.month - 1, 1 - first + row * 7 + col);
+      keys.push(dateKey(date.getFullYear(), date.getMonth() + 1, date.getDate()));
+      const d = row * 7 + col - first + 1;
+      if (d < 1 || d > count) {
+        grid.append(el("div"));
+        continue;
+      }
+      const key = keys[col];
+      const label = date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+      const tile = el("button", "tile" + (key === today ? " today" : ""), d);
+      tile.type = "button";
+      tile.dataset.day = key;
+      tile.title = label;
+      tile.setAttribute("aria-label", label);
+      grid.append(tile);
+      // Lines only join days in the same week row.
+      const nextKey = col < 6 && d < count ? dateKey(m.year, m.month, d + 1) : null;
+      tiles.push({ key, el: tile, nextKey });
+    }
+
+    // A ring for every week that has a day in this month.
+    if (row * 7 - first + 1 > count) {
+      grid.append(el("div"));
+      continue;
+    }
+    const goal = goalRing();
+    goal.keys = keys;
+    goal.start = new Date(m.year, m.month - 1, 1 - first + row * 7);
+    goal.future = keys[0] > today;
+    goals.push(goal);
+    grid.append(goal.el);
   }
-  for (let i = first + count; i < ROWS * 7; i++) grid.append(el("div"));
 
-  $("month-count").textContent = `${marked} / ${count} days`;
   $("prev").classList.toggle("is-hidden", current === 0);
   $("next").classList.toggle("is-hidden", current === MONTHS.length - 1);
+  updateCalendar();
+}
 
-  if (focusedDay) {
-    const again = grid.querySelector(`[data-day="${focusedDay}"]`);
-    if (again) again.focus();
+// `animate` is for a single change someone just made; loading and switching
+// months update instantly. `changed` is the day that was clicked.
+function updateCalendar({ animate = false, changed = null } = {}) {
+  const grid = $("grid");
+  if (!animate) grid.classList.add("instant");
+
+  let marked = 0;
+  for (const tile of tiles) {
+    const on = Boolean(days[tile.key]);
+    if (on) marked++;
+    tile.el.classList.toggle("on", on);
+    tile.el.setAttribute("aria-pressed", String(on));
+
+    if (!tile.nextKey) continue;
+    const joined = on && Boolean(days[tile.nextKey]);
+    // Grow out of the clicked tile; shrink back into the one still marked.
+    if (changed === tile.key) tile.el.style.setProperty("--grow-from", joined ? "left" : "right");
+    if (changed === tile.nextKey) tile.el.style.setProperty("--grow-from", joined ? "right" : "left");
+    tile.el.classList.toggle("joined", joined);
+  }
+
+  for (const goal of goals) {
+    const cnt = goal.keys.filter((key) => days[key]).length;
+    const met = cnt >= GOAL;
+    goal.fill.style.strokeDashoffset = RING_LENGTH * (1 - Math.min(cnt / GOAL, 1));
+    goal.fill.style.opacity = cnt > 0 ? 1 : 0;
+    goal.count.textContent = goal.future && cnt === 0 ? "" : cnt;
+    goal.el.classList.toggle("met", met);
+    const week = goal.start.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    goal.el.setAttribute("aria-label",
+      `Week of ${week}: ${cnt} workout${cnt === 1 ? "" : "s"}${met ? ", goal met" : ""}`);
+
+    // Pulse whenever a new day brings the week to the goal or beyond, starting
+    // with the girls' high five.
+    if (animate && goal.cnt !== null && cnt > goal.cnt && met) {
+      goal.el.classList.remove("pulse");
+      void goal.el.offsetWidth; // restart the pulse if it's already running
+      goal.el.classList.add("pulse");
+    }
+    goal.cnt = cnt;
+  }
+
+  $("month-count").textContent = `${marked} / ${daysIn(MONTHS[current])} days`;
+
+  if (!animate) {
+    // Let the browser apply the new state before turning transitions back on.
+    requestAnimationFrame(() => requestAnimationFrame(() => grid.classList.remove("instant")));
   }
 }
 
@@ -598,11 +764,11 @@ $("grid").addEventListener("click", (e) => {
 });
 
 $("prev").addEventListener("click", () => {
-  if (current > 0) { current--; renderCalendar(); }
+  if (current > 0) { current--; buildCalendar(); }
 });
 
 $("next").addEventListener("click", () => {
-  if (current < MONTHS.length - 1) { current++; renderCalendar(); }
+  if (current < MONTHS.length - 1) { current++; buildCalendar(); }
 });
 
 // ---------- Girls ----------
@@ -752,7 +918,7 @@ $("note-form").addEventListener("submit", async (e) => {
 
 async function init() {
   renderGirls();
-  renderCalendar();
+  buildCalendar();
   renderNote();
   if (store.demo) $("demo").hidden = false;
 
@@ -761,7 +927,7 @@ async function init() {
     onAllDays: (all) => {
       for (const key of Object.keys(days)) delete days[key];
       for (const [key, value] of Object.entries(all)) if (value) days[key] = true;
-      renderCalendar();
+      updateCalendar({ animate: true });
     },
     onNext: (row) => {
       next = { starts_at: row.starts_at ?? null, note: row.note ?? "" };
@@ -769,14 +935,11 @@ async function init() {
     },
   });
 
-  const last = MONTHS.at(-1);
-  const from = dateKey(MONTHS[0].year, MONTHS[0].month, 1);
-  const to = dateKey(last.year, last.month, daysIn(last));
   try {
-    const [loadedDays, loadedNext] = await Promise.all([store.loadDays(from, to), store.loadNext()]);
+    const [loadedDays, loadedNext] = await Promise.all([store.loadDays(), store.loadNext()]);
     for (const [key, value] of Object.entries(loadedDays)) if (value) days[key] = true;
     if (loadedNext) next = { starts_at: loadedNext.starts_at ?? null, note: loadedNext.note ?? "" };
-    renderCalendar();
+    updateCalendar();
     renderNote();
   } catch (error) {
     console.error(error);
@@ -788,7 +951,7 @@ async function init() {
     if (isPast() !== $("note").classList.contains("past")) renderNote();
     if (todayKey() !== shownToday) {
       shownToday = todayKey();
-      renderCalendar();
+      buildCalendar();
     }
   }, 60_000);
 }
